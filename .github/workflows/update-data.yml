@@ -1,0 +1,28 @@
+name: Update IPO Data
+
+on:
+  schedule:
+    # Run every 6 hours
+    - cron: "0 */6 * * *"
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  update-ipos:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update IPO Data
+        run: |
+          curl -X POST "${{ secrets.APP_URL }}/api/cron/update-ipos" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json"
+
+      - name: Update YouTube Reviews
+        run: |
+          curl -X POST "${{ secrets.APP_URL }}/api/cron/update-reviews" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json"
+
+      - name: Keep Supabase Alive
+        run: |
+          curl -s "${{ secrets.APP_URL }}/api/ipos" > /dev/null
+          echo "Supabase keep-alive ping sent"

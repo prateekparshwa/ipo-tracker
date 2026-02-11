@@ -1,0 +1,68 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Ipo {
+  id                  Int       @id @default(autoincrement())
+  companyName         String    @map("company_name")
+  slug                String    @unique
+  ipoType             String    @default("Mainboard") @map("ipo_type")
+  priceBandLow        Decimal?  @map("price_band_low")
+  priceBandHigh       Decimal?  @map("price_band_high")
+  lotSize             Int?      @map("lot_size")
+  issueSize           String?   @map("issue_size")
+  openDate            DateTime? @map("open_date") @db.Date
+  closeDate           DateTime? @map("close_date") @db.Date
+  listingDate         DateTime? @map("listing_date") @db.Date
+  gmp                 Decimal?
+  gmpUpdatedAt        DateTime? @map("gmp_updated_at")
+  subscriptionRetail  Decimal?  @map("subscription_retail")
+  subscriptionNii     Decimal?  @map("subscription_nii")
+  subscriptionQib     Decimal?  @map("subscription_qib")
+  subscriptionTotal   Decimal?  @map("subscription_total")
+  listingPrice        Decimal?  @map("listing_price")
+  listingGainPercent  Decimal?  @map("listing_gain_percent")
+  status              String    @default("Upcoming")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  reviews Review[]
+
+  @@map("ipos")
+}
+
+model Review {
+  id            Int       @id @default(autoincrement())
+  ipoId         Int       @map("ipo_id")
+  youtuberName  String    @map("youtuber_name")
+  channelId     String?   @map("channel_id")
+  videoUrl      String?   @map("video_url")
+  videoTitle    String?   @map("video_title")
+  verdict       String?
+  thumbnailUrl  String?   @map("thumbnail_url")
+  publishedAt   DateTime? @map("published_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  ipo Ipo @relation(fields: [ipoId], references: [id], onDelete: Cascade)
+
+  @@map("reviews")
+}
+
+model Youtuber {
+  id              Int     @id @default(autoincrement())
+  name            String
+  channelId       String  @unique @map("channel_id")
+  channelUrl      String? @map("channel_url")
+  subscriberCount String? @map("subscriber_count")
+  avatarUrl       String? @map("avatar_url")
+  tier            Int     @default(2)
+  platform        String  @default("YouTube")
+  isActive        Boolean @default(true) @map("is_active")
+
+  @@map("youtubers")
+}
