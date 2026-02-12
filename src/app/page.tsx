@@ -36,8 +36,8 @@ export default async function HomePage({ searchParams }: PageProps) {
       },
       orderBy: [{ openDate: "desc" }],
     });
-  } catch {
-    // If DB isn't connected yet, show empty list
+  } catch (error) {
+    console.error("Failed to fetch IPOs from database:", error);
     ipos = [];
   }
 
