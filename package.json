@@ -10,12 +10,13 @@
     "postinstall": "npx prisma generate"
   },
   "dependencies": {
+    "@eslint/eslintrc": "^3.3.3",
     "@prisma/adapter-pg": "^7.4.0",
     "@prisma/client": "^7.3.0",
     "@supabase/supabase-js": "^2.95.3",
     "cheerio": "^1.2.0",
     "dotenv": "^17.2.4",
-    "next": "16.1.6",
+    "next": "^15.5.12",
     "pg": "^8.18.0",
     "prisma": "^7.3.0",
     "react": "19.2.3",
@@ -28,7 +29,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.1.6",
+    "eslint-config-next": "^15.5.12",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
