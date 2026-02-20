@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import SentimentMeter from "./SentimentMeter";
 
 interface Review {
@@ -73,10 +74,12 @@ export default function VerdictSection({ reviews }: VerdictSectionProps) {
                   <div className="flex items-start gap-3">
                     {/* Thumbnail or avatar placeholder */}
                     {review.thumbnailUrl ? (
-                      <img
+                      <Image
                         src={review.thumbnailUrl}
                         alt={review.youtuberName}
-                        className="h-16 w-28 rounded-lg object-cover"
+                        width={112}
+                        height={64}
+                        className="rounded-lg object-cover"
                       />
                     ) : (
                       <div className="flex h-16 w-28 items-center justify-center rounded-lg bg-gray-200 text-2xl">
