@@ -181,7 +181,7 @@ function deduplicateBySlug(ipos: IpoData[]): IpoData[] {
       const merged: IpoData = { ...existing };
       for (const key of Object.keys(ipo) as (keyof IpoData)[]) {
         if (ipo[key] !== undefined) {
-          (merged as Record<string, unknown>)[key] = ipo[key];
+          (merged as unknown as Record<string, unknown>)[key] = ipo[key];
         }
       }
       map.set(ipo.slug, merged);
