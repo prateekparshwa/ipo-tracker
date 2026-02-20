@@ -40,14 +40,25 @@ export default function IpoCard({ ipo }: IpoCardProps) {
 
   return (
     <Link href={`/ipo/${ipo.slug}`}>
-      <div className="group rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-all hover:border-blue-300 hover:shadow-md">
+      <div className={`group rounded-xl border p-5 shadow-sm transition-all hover:border-blue-300 hover:shadow-md ${
+        totalReviews > 0
+          ? "border-purple-200 bg-purple-50/20"
+          : "border-gray-200 bg-white"
+      }`}>
         {/* Header */}
         <div className="mb-3 flex items-start justify-between">
           <div className="flex-1">
             <h3 className="text-lg font-bold text-gray-900 group-hover:text-blue-600">
               {ipo.companyName}
             </h3>
-            <span className="text-xs text-gray-500">{ipo.ipoType}</span>
+            <div className="mt-1 flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-gray-500">{ipo.ipoType}</span>
+              {totalReviews > 0 && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-600">
+                  ▶ {totalReviews} Expert {totalReviews === 1 ? "Review" : "Reviews"}
+                </span>
+              )}
+            </div>
           </div>
           <StatusPill status={ipo.status} />
         </div>
