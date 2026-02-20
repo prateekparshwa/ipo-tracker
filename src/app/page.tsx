@@ -38,19 +38,25 @@ export default async function HomePage({ searchParams }: PageProps) {
   // regardless of when the cron last ran
   function recalcStatus(ipo: IpoWithReviews): IpoWithReviews {
     const now = new Date();
-    now.setHours(0, 0, 0, 0);
     let status = "Upcoming";
+
     if (ipo.listingDate) {
-      const d = new Date(ipo.listingDate); d.setHours(0, 0, 0, 0);
-      if (d <= now) status = "Listed";
+      // Listing at ~10:00 AM IST = 04:30 AM UTC on listing date
+      const d = new Date(ipo.listingDate);
+      const listingTime = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 4, 30, 0));
+      if (listingTime <= now) status = "Listed";
     }
     if (status === "Upcoming" && ipo.closeDate) {
-      const d = new Date(ipo.closeDate); d.setHours(0, 0, 0, 0);
-      if (d < now) status = "Closed";
+      // Subscription closes at 3:30 PM IST = 10:00 AM UTC on close date
+      const d = new Date(ipo.closeDate);
+      const closeTime = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 10, 0, 0));
+      if (closeTime <= now) status = "Closed";
     }
     if (status === "Upcoming" && ipo.openDate) {
-      const d = new Date(ipo.openDate); d.setHours(0, 0, 0, 0);
-      if (d <= now) status = "Open";
+      // Subscription opens at 9:30 AM IST = 04:00 AM UTC on open date
+      const d = new Date(ipo.openDate);
+      const openTime = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 4, 0, 0));
+      if (openTime <= now) status = "Open";
     }
     return { ...ipo, status };
   }

@@ -33,19 +33,24 @@ function determineStatus(
   listingDate?: string
 ): IpoData["status"] {
   const now = new Date();
-  now.setHours(0, 0, 0, 0);
 
   if (listingDate) {
-    const listing = new Date(listingDate);
-    if (listing <= now) return "Listed";
+    // Listing at ~10:00 AM IST = 04:30 AM UTC on listing date
+    const d = new Date(listingDate);
+    const listingTime = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 4, 30, 0));
+    if (listingTime <= now) return "Listed";
   }
   if (closeDate) {
-    const close = new Date(closeDate);
-    if (close < now) return "Closed";
+    // Subscription closes at 3:30 PM IST = 10:00 AM UTC on close date
+    const d = new Date(closeDate);
+    const closeTime = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 10, 0, 0));
+    if (closeTime <= now) return "Closed";
   }
   if (openDate) {
-    const open = new Date(openDate);
-    if (open <= now) return "Open";
+    // Subscription opens at 9:30 AM IST = 04:00 AM UTC on open date
+    const d = new Date(openDate);
+    const openTime = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 4, 0, 0));
+    if (openTime <= now) return "Open";
   }
   return "Upcoming";
 }
