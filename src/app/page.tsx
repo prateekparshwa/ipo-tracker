@@ -22,18 +22,11 @@ export default async function HomePage({ searchParams }: PageProps) {
   const params = await searchParams;
   const statusFilter = params.status;
 
-  const where: Record<string, unknown> = {};
-  if (statusFilter && statusFilter !== "All") {
-    where.status = statusFilter;
-  }
-
   let ipos: IpoWithReviews[] = [];
   try {
+    // Fetch all IPOs — we filter by recalculated status below
     ipos = await prisma.ipo.findMany({
-      where,
-      include: {
-        reviews: true,
-      },
+      include: { reviews: true },
       orderBy: [{ openDate: "desc" }],
     });
   } catch (error) {
@@ -41,11 +34,40 @@ export default async function HomePage({ searchParams }: PageProps) {
     ipos = [];
   }
 
+  // Recalculate status dynamically so filter tabs are always accurate
+  // regardless of when the cron last ran
+  function recalcStatus(ipo: IpoWithReviews): IpoWithReviews {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    let status = "Upcoming";
+    if (ipo.listingDate) {
+      const d = new Date(ipo.listingDate); d.setHours(0, 0, 0, 0);
+      if (d <= now) status = "Listed";
+    }
+    if (status === "Upcoming" && ipo.closeDate) {
+      const d = new Date(ipo.closeDate); d.setHours(0, 0, 0, 0);
+      if (d < now) status = "Closed";
+    }
+    if (status === "Upcoming" && ipo.openDate) {
+      const d = new Date(ipo.openDate); d.setHours(0, 0, 0, 0);
+      if (d <= now) status = "Open";
+    }
+    return { ...ipo, status };
+  }
+
+  const recalculated = ipos.map(recalcStatus);
+
+  // Apply status filter after recalculation
+  const filtered =
+    statusFilter && statusFilter !== "All"
+      ? recalculated.filter((ipo) => ipo.status === statusFilter)
+      : recalculated;
+
   // Separate by status for ordering: Open > Upcoming > Closed > Listed
   const statusOrder = ["Open", "Upcoming", "Closed", "Listed"];
-  const sorted = [...ipos].sort((a, b) => {
-    const aIdx = statusOrder.indexOf(a.status);
-    const bIdx = statusOrder.indexOf(b.status);
+  const sorted = [...filtered].sort((a, b) => {
+    const aIdx = statusOrder.indexOf(a.status ?? "Upcoming");
+    const bIdx = statusOrder.indexOf(b.status ?? "Upcoming");
     if (aIdx !== bIdx) return aIdx - bIdx;
     const aDate = a.openDate ? new Date(a.openDate).getTime() : 0;
     const bDate = b.openDate ? new Date(b.openDate).getTime() : 0;
