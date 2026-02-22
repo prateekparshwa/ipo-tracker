@@ -1,6 +1,10 @@
 import * as cheerio from "cheerio";
 import { IpoData } from "./types";
 
+// Internal type used only within this file to carry the detail-page URL
+// for enrichment. Stripped before returning from fetchAllIPOs().
+type IpoDataInternal = IpoData & { detailUrl?: string };
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const FETCH_HEADERS = {
@@ -205,9 +209,9 @@ function scrapeListedIposTable(
   html: string,
   tableId: string,
   ipoType: "Mainboard" | "SME"
-): IpoData[] {
+): IpoDataInternal[] {
   const $ = cheerio.load(html);
-  const results: IpoData[] = [];
+  const results: IpoDataInternal[] = [];
 
   $(`#${tableId} tbody tr`).each((_, row) => {
     const cells = $(row).find("td");
@@ -216,6 +220,7 @@ function scrapeListedIposTable(
     const companyName = $(cells[0]).text().trim();
     if (!companyName) return;
 
+    const detailUrl = $(cells[0]).find("a").first().attr("href") || undefined;
     const openDate = parseLongDate($(cells[1]).text());
     const closeDate = parseLongDate($(cells[2]).text());
     const issueSize = parseIssueSize($(cells[3]).text());
@@ -242,6 +247,7 @@ function scrapeListedIposTable(
       listingPrice,
       listingGainPercent,
       status,
+      detailUrl,
     });
   });
 
@@ -257,8 +263,8 @@ function scrapeUpcomingIposTable(
   $: ReturnType<typeof cheerio.load>,
   tableId: string,
   ipoType: "Mainboard" | "SME"
-): IpoData[] {
-  const results: IpoData[] = [];
+): IpoDataInternal[] {
+  const results: IpoDataInternal[] = [];
   const currentYear = new Date().getFullYear();
 
   $(`#${tableId} tbody tr`).each((_, row) => {
@@ -268,6 +274,7 @@ function scrapeUpcomingIposTable(
     const companyName = $(cells[0]).text().trim();
     if (!companyName) return;
 
+    const detailUrl = $(cells[0]).find("a").first().attr("href") || undefined;
     const { openDate, closeDate } = parseShortDateRange(
       $(cells[1]).text(),
       currentYear
@@ -287,10 +294,55 @@ function scrapeUpcomingIposTable(
       priceBandLow,
       priceBandHigh,
       status,
+      detailUrl,
     });
   });
 
   return results;
+}
+
+// ─── Detail-page enrichment ───────────────────────────────────────────────────
+
+/**
+ * Fetches an IPO's detail page and extracts listing date + lot size.
+ * Uses a short timeout so one slow page can't stall the whole cron job.
+ */
+async function enrichIpoDetails(
+  detailUrl: string
+): Promise<{ listingDate?: string; lotSize?: number }> {
+  try {
+    const response = await fetch(detailUrl, {
+      headers: FETCH_HEADERS,
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!response.ok) return {};
+
+    const html = await response.text();
+    // Strip tags for plain-text regex matching
+    const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+
+    // "IPO to list on ... on March 2, 2026" or "to list on BSE SME on Feb 27, 2026"
+    let listingDate: string | undefined;
+    const listingMatch = text.match(
+      /to list\b[^.]*?\bon\s+([A-Z][a-z]+ \d{1,2},\s*\d{4})/i
+    );
+    if (listingMatch) {
+      const d = new Date(listingMatch[1]);
+      if (!isNaN(d.getTime())) listingDate = d.toISOString().slice(0, 10);
+    }
+
+    // "minimum market lot is 4,000 shares" or "lot size is 2000 shares"
+    let lotSize: number | undefined;
+    const lotMatch = text.match(/(?:minimum market )?lot (?:size )?is ([\d,]+)\s*shares/i);
+    if (lotMatch) {
+      const parsed = parseInt(lotMatch[1].replace(/,/g, ""), 10);
+      if (!isNaN(parsed) && parsed > 0) lotSize = parsed;
+    }
+
+    return { listingDate, lotSize };
+  } catch {
+    return {};
+  }
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -308,7 +360,7 @@ export async function fetchAllIPOs(): Promise<IpoData[]> {
       fetchPage("https://www.ipowatch.in/upcoming-ipo/"),
     ]);
 
-    const all: IpoData[] = [];
+    const all: IpoDataInternal[] = [];
 
     if (mainboardHtml) {
       const ipos = scrapeListedIposTable(mainboardHtml, "tablepress-17", "Mainboard");
@@ -330,9 +382,34 @@ export async function fetchAllIPOs(): Promise<IpoData[]> {
       all.push(...mainUpcoming, ...smeUpcoming);
     }
 
-    const deduped = deduplicateBySlug(all);
-    console.log(`fetchAllIPOs: returning ${deduped.length} total IPOs`);
-    return deduped;
+    const deduped = deduplicateBySlug(all) as IpoDataInternal[];
+
+    // Enrich Open/Upcoming IPOs with listing date + lot size from their detail pages.
+    // Only fetch if the data is actually missing to avoid unnecessary requests.
+    const toEnrich = deduped.filter(
+      (ipo) =>
+        (ipo.status === "Open" || ipo.status === "Upcoming") &&
+        ipo.detailUrl &&
+        (!ipo.listingDate || !ipo.lotSize)
+    );
+
+    if (toEnrich.length > 0) {
+      console.log(`Enriching ${toEnrich.length} IPOs with detail-page data...`);
+      const enrichResults = await Promise.all(
+        toEnrich.map((ipo) => enrichIpoDetails(ipo.detailUrl!))
+      );
+      for (let i = 0; i < toEnrich.length; i++) {
+        const ipo = toEnrich[i];
+        const { listingDate, lotSize } = enrichResults[i];
+        if (listingDate && !ipo.listingDate) ipo.listingDate = listingDate;
+        if (lotSize && !ipo.lotSize) ipo.lotSize = lotSize;
+      }
+    }
+
+    // Strip internal detailUrl field before returning
+    const cleaned: IpoData[] = deduped.map(({ detailUrl: _url, ...rest }) => rest);
+    console.log(`fetchAllIPOs: returning ${cleaned.length} total IPOs`);
+    return cleaned;
   } catch (err) {
     console.error("fetchAllIPOs: unexpected error:", err);
     return [];
