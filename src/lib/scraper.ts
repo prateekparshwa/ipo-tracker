@@ -227,11 +227,18 @@ function fuzzyDeduplicateByPrefix(ipos: IpoDataInternal[]): IpoDataInternal[] {
       const bIsPrefix = a.slug.startsWith(b.slug + "-");
       if (!aIsPrefix && !bIsPrefix) continue;
 
-      // Price band must match to confirm it's the same IPO.
-      // (Dates can differ slightly between ipowatch.in's tables; price never does.)
-      const sameLow = a.priceBandLow !== undefined && a.priceBandLow === b.priceBandLow;
-      const sameHigh = a.priceBandHigh !== undefined && a.priceBandHigh === b.priceBandHigh;
-      if (!sameLow || !sameHigh) continue;
+      // Company name must confirm the prefix relationship (case-insensitive,
+      // space-separated word boundary). This is more reliable than price band
+      // because the price format can vary across ipowatch.in's different tables.
+      // e.g. "Gaudium IVF" must be a full-word prefix of "Gaudium IVF & Women Health"
+      const aNameIsPrefix = b.companyName
+        .toLowerCase()
+        .startsWith(a.companyName.toLowerCase() + " ");
+      const bNameIsPrefix = a.companyName
+        .toLowerCase()
+        .startsWith(b.companyName.toLowerCase() + " ");
+      if (aIsPrefix && !aNameIsPrefix) continue;
+      if (bIsPrefix && !bNameIsPrefix) continue;
 
       // Keep the longer (more specific) name; remove the shorter one.
       // Merge any non-null fields from the shorter into the longer.
