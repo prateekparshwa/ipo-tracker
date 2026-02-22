@@ -409,83 +409,119 @@ async function enrichIpoDetails(
 
 // ─── Chittorgarh subscription enrichment ──────────────────────────────────────
 
+// Chittorgarh's REPORT/LIST pages (e.g. /report/ipo-subscription-status.../21/)
+// are Next.js CSR SPAs — fetch() in Vercel returns only the empty HTML shell.
+// Instead we use Chittorgarh's INDIVIDUAL subscription pages
+// (https://www.chittorgarh.com/ipo_subscription/{slug}/{id}/) which ARE SSR and
+// return the full live subscription text in the initial HTML response.
+//
+// Each IPO has a non-predictable numeric Chittorgarh ID that can only be found by
+// browser-rendering their list/timetable pages.  We maintain a hardcoded lookup
+// here.  To add a new IPO: visit its Chittorgarh detail page in a browser, note
+// the numeric ID from the URL, and add an entry below.
+
+interface ChittorgarhEntry {
+  slug: string; // Chittorgarh URL slug, e.g. "gaudium-ivf-ipo"
+  id: number; // Chittorgarh numeric ID, e.g. 2019
+  closeDate: string; // YYYY-MM-DD — primary match key
+  nameHint: string; // short lowercase fragment for tiebreaking same-closeDate IPOs
+}
+
+// Source: browser-render https://www.chittorgarh.com/report/ipo-list-by-time-table-and-lot-size/118/mainboard/?year=2026
+// Update this list whenever a new IPO opens.
+const CHITTORGARH_2026: ChittorgarhEntry[] = [
+  { slug: "gaudium-ivf-ipo",                       id: 2019, closeDate: "2026-02-24", nameHint: "gaudium" },
+  { slug: "clean-max-enviro-energy-solutions-ipo",  id: 2573, closeDate: "2026-02-25", nameHint: "clean max" },
+  { slug: "shree-ram-twistex-ipo",                  id: 2502, closeDate: "2026-02-25", nameHint: "shree ram" },
+  { slug: "pngs-reva-ipo",                          id: 2475, closeDate: "2026-02-26", nameHint: "pngs" },
+  { slug: "omnitech-engineering-ipo",               id: 2479, closeDate: "2026-02-27", nameHint: "omnitech" },
+  { slug: "bharat-coking-coal-ipo",                 id: 2462, closeDate: "2026-01-13", nameHint: "coking" },
+  { slug: "amagi-media-labs-ipo",                   id: 2549, closeDate: "2026-01-16", nameHint: "amagi" },
+  { slug: "shadowfax-technologies-ipo",             id: 2526, closeDate: "2026-01-22", nameHint: "shadowfax" },
+  { slug: "aye-finance-ipo",                        id: 2026, closeDate: "2026-02-11", nameHint: "aye finance" },
+  { slug: "fractal-analytics-ipo",                  id: 2569, closeDate: "2026-02-11", nameHint: "fractal" },
+];
+
 /**
- * Scrapes the Chittorgarh live subscription pages (Mainboard + SME) and
- * backfills subscriptionQib / subscriptionNii / subscriptionRetail /
- * subscriptionTotal on any matching IPO in the provided array.
+ * Fetches subscription multipliers (QIB / NII / Retail / Total) for each Open
+ * IPO from Chittorgarh's individual SSR subscription pages and writes them into
+ * the provided `ipos` array in place.
  *
- * Matching is done by closeDate because each IPO has a unique close date and
- * Chittorgarh shows it in the same table row.  The function mutates `ipos`
- * in place and never throws — a fetch or parse failure is logged and skipped.
+ * Only Open IPOs are fetched — Upcoming IPOs have not started bidding yet and
+ * the subscription page will return "data unavailable".  Failures are logged and
+ * skipped so a single bad fetch never aborts the cron run.
  */
 async function enrichSubscriptionFromChittorgarh(
   ipos: IpoDataInternal[]
 ): Promise<void> {
-  const urls = [
-    "https://www.chittorgarh.com/report/ipo-subscription-status-live-bidding-data-bse-nse/21/",
-    "https://www.chittorgarh.com/report/sme-ipo-subscription-status-live-bidding-bse-nse/22/",
-  ];
+  // Subscription data only exists while the IPO is actively accepting bids.
+  const openIpos = ipos.filter((ipo) => ipo.status === "Open" && ipo.closeDate);
+  if (openIpos.length === 0) return;
 
-  // Build a quick lookup: closeDate (YYYY-MM-DD) → IPO index
-  const byCloseDate = new Map<string, number>();
-  for (let i = 0; i < ipos.length; i++) {
-    if (ipos[i].closeDate) byCloseDate.set(ipos[i].closeDate!, i);
-  }
+  await Promise.all(
+    openIpos.map(async (ipo) => {
+      // First-pass: match by closeDate.
+      const candidates = CHITTORGARH_2026.filter(
+        (e) => e.closeDate === ipo.closeDate
+      );
+      if (candidates.length === 0) return; // IPO not in our map yet
 
-  for (const url of urls) {
-    try {
-      const res = await fetch(url, {
-        headers: FETCH_HEADERS,
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) {
-        console.warn(`enrichSubscription: HTTP ${res.status} for ${url}`);
-        continue;
+      // Tiebreak when two IPOs close on the same day: prefer the one whose
+      // nameHint appears in our company name.
+      const entry =
+        candidates.length === 1
+          ? candidates[0]
+          : candidates.sort((a, b) => {
+              const name = ipo.companyName.toLowerCase();
+              return (
+                (name.includes(b.nameHint) ? 1 : 0) -
+                (name.includes(a.nameHint) ? 1 : 0)
+              );
+            })[0];
+
+      const url = `https://www.chittorgarh.com/ipo_subscription/${entry.slug}/${entry.id}/`;
+      try {
+        const res = await fetch(url, {
+          headers: FETCH_HEADERS,
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!res.ok) {
+          console.warn(
+            `enrichSubscription: HTTP ${res.status} for ${ipo.companyName}`
+          );
+          return;
+        }
+        const html = await res.text();
+        const $ = cheerio.load(html);
+        // Extract all visible text — subscription data is in a paragraph block.
+        const text = $.text();
+
+        // Confirmed against live Chittorgarh SSR page (Gaudium IVF):
+        // "Gaudium IVF IPO subscribed 0.90 times. The public issue subscribed
+        //  1.42 times in the retail category, 0.00 times in QIB (Ex Anchor),
+        //  and 0.91 times in the NII category"
+        const totalMatch  = text.match(/subscribed ([\d.]+) times/i);
+        const retailMatch = text.match(/([\d.]+) times in the retail/i);
+        const qibMatch    = text.match(/([\d.]+) times in(?: the)? QIB/i);
+        const niiMatch    = text.match(/([\d.]+) times in the NII/i);
+
+        if (totalMatch)  ipo.subscriptionTotal  = parseFloat(totalMatch[1]);
+        if (retailMatch) ipo.subscriptionRetail = parseFloat(retailMatch[1]);
+        if (qibMatch)    ipo.subscriptionQib    = parseFloat(qibMatch[1]);
+        if (niiMatch)    ipo.subscriptionNii    = parseFloat(niiMatch[1]);
+
+        if (totalMatch) {
+          console.log(
+            `Subscription enriched: ${ipo.companyName} — ` +
+              `Total=${ipo.subscriptionTotal}x Retail=${ipo.subscriptionRetail}x ` +
+              `QIB=${ipo.subscriptionQib}x NII=${ipo.subscriptionNii}x`
+          );
+        }
+      } catch (err) {
+        console.warn(`enrichSubscription: failed for ${ipo.companyName}:`, err);
       }
-      const html = await res.text();
-      const $ = cheerio.load(html);
-
-      // The live subscription table is the first <table> after the heading.
-      // Columns (0-indexed): 0=Company, 1=ClosingDate, 2=IssueAmt,
-      //   3=QIB, 4=sNII, 5=bNII, 6=NII, 7=Retail, 8=Employee,
-      //   9=Shareholder, 10=Others, 11=Total, 12=Applications
-      $("table tr").each((_i, row) => {
-        const cells = $(row).find("td");
-        if (cells.length < 12) return; // skip header / short rows
-
-        const closeDateRaw = $(cells[1]).text().trim(); // e.g. "Feb 24, 2026"
-        const parsed = new Date(closeDateRaw);
-        if (isNaN(parsed.getTime())) return;
-        const closeDate = parsed.toISOString().slice(0, 10);
-
-        const idx = byCloseDate.get(closeDate);
-        if (idx === undefined) return;
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const parseFloat_ = (el: any) => {
-          const v = parseFloat($(el).text().trim());
-          return isNaN(v) ? undefined : v;
-        };
-
-        const qib = parseFloat_(cells[3]);
-        const nii = parseFloat_(cells[6]);
-        const retail = parseFloat_(cells[7]);
-        const total = parseFloat_(cells[11]);
-
-        if (qib !== undefined) ipos[idx].subscriptionQib = qib;
-        if (nii !== undefined) ipos[idx].subscriptionNii = nii;
-        if (retail !== undefined) ipos[idx].subscriptionRetail = retail;
-        if (total !== undefined) ipos[idx].subscriptionTotal = total;
-
-        console.log(
-          `Subscription enriched: ${ipos[idx].companyName} — ` +
-            `QIB=${qib}x NII=${nii}x Retail=${retail}x Total=${total}x`
-        );
-      });
-    } catch (err) {
-      console.warn(`enrichSubscription: failed for ${url}:`, err);
-    }
-  }
+    })
+  );
 }
 
 // ─── InvestorGain GMP enrichment ──────────────────────────────────────────────
