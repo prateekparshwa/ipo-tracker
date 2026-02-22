@@ -205,9 +205,12 @@ function deduplicateBySlug(ipos: IpoData[]): IpoData[] {
  * vs "Gaudium IVF & Women Health" in the listed table).
  *
  * Rule: if one slug is a strict prefix of another (e.g. "gaudium-ivf" is a
- * prefix of "gaudium-ivf-women-health") AND they share the same open or close
- * date, they are the same IPO. The shorter-named entry is removed and its
- * non-null fields fill any gaps in the longer-named entry.
+ * prefix of "gaudium-ivf-women-health") AND both entries share the same price
+ * band (low + high), they are the same IPO. Price band is used instead of
+ * dates because ipowatch.in sometimes shows slightly different date ranges
+ * for the same IPO across their different tables, but the price is always
+ * consistent. The shorter-named entry is removed and its non-null fields
+ * fill any gaps in the longer-named entry.
  */
 function fuzzyDeduplicateByPrefix(ipos: IpoDataInternal[]): IpoDataInternal[] {
   const result = [...ipos];
@@ -224,10 +227,11 @@ function fuzzyDeduplicateByPrefix(ipos: IpoDataInternal[]): IpoDataInternal[] {
       const bIsPrefix = a.slug.startsWith(b.slug + "-");
       if (!aIsPrefix && !bIsPrefix) continue;
 
-      // Must share the same open or close date to confirm it's the same IPO
-      const sameOpen = a.openDate && b.openDate && a.openDate === b.openDate;
-      const sameClose = a.closeDate && b.closeDate && a.closeDate === b.closeDate;
-      if (!sameOpen && !sameClose) continue;
+      // Price band must match to confirm it's the same IPO.
+      // (Dates can differ slightly between ipowatch.in's tables; price never does.)
+      const sameLow = a.priceBandLow !== undefined && a.priceBandLow === b.priceBandLow;
+      const sameHigh = a.priceBandHigh !== undefined && a.priceBandHigh === b.priceBandHigh;
+      if (!sameLow || !sameHigh) continue;
 
       // Keep the longer (more specific) name; remove the shorter one.
       // Merge any non-null fields from the shorter into the longer.
