@@ -95,6 +95,10 @@ export default function IpoCard({ ipo }: IpoCardProps) {
             <span className="text-gray-400">Close:</span>{" "}
             <span className="font-medium">{formatDate(ipo.closeDate)}</span>
           </div>
+          <div className="col-span-2">
+            <span className="text-gray-400">Listing:</span>{" "}
+            <span className="font-medium">{formatDate(ipo.listingDate)}</span>
+          </div>
         </div>
 
         {/* Expert verdict summary */}
