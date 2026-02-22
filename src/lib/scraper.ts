@@ -407,6 +407,170 @@ async function enrichIpoDetails(
   }
 }
 
+// ─── Chittorgarh subscription enrichment ──────────────────────────────────────
+
+/**
+ * Scrapes the Chittorgarh live subscription pages (Mainboard + SME) and
+ * backfills subscriptionQib / subscriptionNii / subscriptionRetail /
+ * subscriptionTotal on any matching IPO in the provided array.
+ *
+ * Matching is done by closeDate because each IPO has a unique close date and
+ * Chittorgarh shows it in the same table row.  The function mutates `ipos`
+ * in place and never throws — a fetch or parse failure is logged and skipped.
+ */
+async function enrichSubscriptionFromChittorgarh(
+  ipos: IpoDataInternal[]
+): Promise<void> {
+  const urls = [
+    "https://www.chittorgarh.com/report/ipo-subscription-status-live-bidding-data-bse-nse/21/",
+    "https://www.chittorgarh.com/report/sme-ipo-subscription-status-live-bidding-bse-nse/22/",
+  ];
+
+  // Build a quick lookup: closeDate (YYYY-MM-DD) → IPO index
+  const byCloseDate = new Map<string, number>();
+  for (let i = 0; i < ipos.length; i++) {
+    if (ipos[i].closeDate) byCloseDate.set(ipos[i].closeDate!, i);
+  }
+
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        headers: FETCH_HEADERS,
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) {
+        console.warn(`enrichSubscription: HTTP ${res.status} for ${url}`);
+        continue;
+      }
+      const html = await res.text();
+      const $ = cheerio.load(html);
+
+      // The live subscription table is the first <table> after the heading.
+      // Columns (0-indexed): 0=Company, 1=ClosingDate, 2=IssueAmt,
+      //   3=QIB, 4=sNII, 5=bNII, 6=NII, 7=Retail, 8=Employee,
+      //   9=Shareholder, 10=Others, 11=Total, 12=Applications
+      $("table tr").each((_i, row) => {
+        const cells = $(row).find("td");
+        if (cells.length < 12) return; // skip header / short rows
+
+        const closeDateRaw = $(cells[1]).text().trim(); // e.g. "Feb 24, 2026"
+        const parsed = new Date(closeDateRaw);
+        if (isNaN(parsed.getTime())) return;
+        const closeDate = parsed.toISOString().slice(0, 10);
+
+        const idx = byCloseDate.get(closeDate);
+        if (idx === undefined) return;
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const parseFloat_ = (el: any) => {
+          const v = parseFloat($(el).text().trim());
+          return isNaN(v) ? undefined : v;
+        };
+
+        const qib = parseFloat_(cells[3]);
+        const nii = parseFloat_(cells[6]);
+        const retail = parseFloat_(cells[7]);
+        const total = parseFloat_(cells[11]);
+
+        if (qib !== undefined) ipos[idx].subscriptionQib = qib;
+        if (nii !== undefined) ipos[idx].subscriptionNii = nii;
+        if (retail !== undefined) ipos[idx].subscriptionRetail = retail;
+        if (total !== undefined) ipos[idx].subscriptionTotal = total;
+
+        console.log(
+          `Subscription enriched: ${ipos[idx].companyName} — ` +
+            `QIB=${qib}x NII=${nii}x Retail=${retail}x Total=${total}x`
+        );
+      });
+    } catch (err) {
+      console.warn(`enrichSubscription: failed for ${url}:`, err);
+    }
+  }
+}
+
+// ─── InvestorGain GMP enrichment ──────────────────────────────────────────────
+
+/**
+ * Scrapes InvestorGain live GMP pages (Mainboard + SME) and backfills the
+ * `gmp` field on Open/Upcoming IPOs that do not yet have a GMP value.
+ *
+ * Listed IPOs already have their GMP from ipowatch's "Last GMP" column and
+ * are intentionally NOT overwritten here.
+ *
+ * Matching is done by closeDate.  Mutates `ipos` in place, never throws.
+ */
+async function enrichGmpFromInvestorGain(
+  ipos: IpoDataInternal[]
+): Promise<void> {
+  const urls = [
+    "https://www.investorgain.com/report/live-ipo-gmp/331/ipo/",
+    "https://www.investorgain.com/report/live-ipo-gmp/331/sme/",
+  ];
+
+  // Build lookup: closeDate → IPO index (only for non-Listed IPOs)
+  const byCloseDate = new Map<string, number>();
+  for (let i = 0; i < ipos.length; i++) {
+    if (ipos[i].closeDate && ipos[i].status !== "Listed") {
+      byCloseDate.set(ipos[i].closeDate!, i);
+    }
+  }
+
+  const currentYear = new Date().getFullYear();
+
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        headers: FETCH_HEADERS,
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) {
+        console.warn(`enrichGmp: HTTP ${res.status} for ${url}`);
+        continue;
+      }
+      const html = await res.text();
+      const $ = cheerio.load(html);
+
+      // InvestorGain table columns (0-indexed):
+      // 0=Name, 1=GMP, 2=Rating, 3=Sub, 4=Price, 5=IssueSize,
+      // 6=Lot, 7=Open, 8=Close, 9=BoA, 10=Listing, 11=UpdatedOn, 12=Anchor
+      $("table tr").each((_i, row) => {
+        const cells = $(row).find("td");
+        if (cells.length < 9) return;
+
+        // Close date column: "24-Feb" format
+        const closeDateRaw = $(cells[8]).text().trim().split("\n")[0].trim();
+        const closeParts = closeDateRaw.match(/^(\d{1,2})-([A-Za-z]{3})$/);
+        if (!closeParts) return;
+        const closeDate = new Date(
+          `${closeParts[2]} ${closeParts[1]}, ${currentYear}`
+        )
+          .toISOString()
+          .slice(0, 10);
+
+        const idx = byCloseDate.get(closeDate);
+        if (idx === undefined) return;
+
+        // GMP column: "₹8.5 (10.76%)" — extract the ₹ amount
+        const gmpRaw = $(cells[1]).text().trim();
+        const gmpMatch = gmpRaw.match(/₹\s*([-\d.]+)/);
+        if (!gmpMatch) return;
+        const gmp = parseFloat(gmpMatch[1]);
+        if (isNaN(gmp)) return;
+
+        // Only set if not already populated from ipowatch
+        if (ipos[idx].gmp === undefined || ipos[idx].gmp === null) {
+          ipos[idx].gmp = gmp;
+          console.log(
+            `GMP enriched: ${ipos[idx].companyName} — ₹${gmp}`
+          );
+        }
+      });
+    } catch (err) {
+      console.warn(`enrichGmp: failed for ${url}:`, err);
+    }
+  }
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -469,6 +633,13 @@ export async function fetchAllIPOs(): Promise<IpoData[]> {
         if (lotSize && !ipo.lotSize) ipo.lotSize = lotSize;
       }
     }
+
+    // Enrich subscription data (Chittorgarh) and GMP (InvestorGain) in parallel.
+    // Both functions are safe to run concurrently and mutate deduped in place.
+    await Promise.all([
+      enrichSubscriptionFromChittorgarh(deduped),
+      enrichGmpFromInvestorGain(deduped),
+    ]);
 
     // Strip internal detailUrl field before returning
     const cleaned: IpoData[] = deduped.map(({ detailUrl: _url, ...rest }) => rest);
