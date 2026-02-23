@@ -69,6 +69,30 @@ export async function POST(request: Request) {
       upsertCount++;
     }
 
+    // ── Stale-record cleanup ────────────────────────────────────────────────
+    // ipowatch.in occasionally renames IPOs (e.g. "Mobilise App Lab" →
+    // "Mobilise App"), leaving the old slug in the DB forever because the cron
+    // only ever upserts. Delete non-Listed records that (a) are NOT in the
+    // current scrape AND (b) share a closeDate with an IPO that IS — proving
+    // they are ghost copies of a renamed company, not genuinely absent records.
+    const currentSlugs = ipos.map((i) => i.slug);
+    const currentCloseDates = ipos
+      .filter((i) => i.closeDate)
+      .map((i) => new Date(i.closeDate!));
+
+    if (currentCloseDates.length > 0) {
+      const cleaned = await prisma.ipo.deleteMany({
+        where: {
+          slug:      { notIn: currentSlugs },
+          status:    { in: ["Open", "Upcoming", "Closed"] },
+          closeDate: { in: currentCloseDates },
+        },
+      });
+      if (cleaned.count > 0) {
+        console.log(`Cleaned up ${cleaned.count} stale duplicate IPO record(s)`);
+      }
+    }
+
     return NextResponse.json({
       message: "IPO data updated successfully",
       count: upsertCount,
