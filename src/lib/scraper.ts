@@ -524,86 +524,101 @@ async function enrichSubscriptionFromChittorgarh(
   );
 }
 
-// ─── InvestorGain GMP enrichment ──────────────────────────────────────────────
+// ─── ipowatch GMP enrichment ──────────────────────────────────────────────────
+
+// InvestorGain GMP pages (/chr-gmp/{slug}/{id}) are Next.js CSR SPAs — curl
+// confirms 118KB response but zero GMP text in the static HTML.
+//
+// ipowatch.in/ipo-grey-market-premium-latest-ipo-gmp/ is WordPress (SSR) and
+// contains two live tablepress tables with GMP for all Open/Upcoming IPOs.
+// Confirmed via plain curl: "₹8.5", "₹16", etc. embedded in initial HTML.
 
 /**
- * Scrapes InvestorGain live GMP pages (Mainboard + SME) and backfills the
- * `gmp` field on Open/Upcoming IPOs that do not yet have a GMP value.
+ * Scrapes ipowatch's GMP page (SSR) and backfills the `gmp` field on
+ * Open/Upcoming IPOs that do not yet have a GMP value.
  *
- * Listed IPOs already have their GMP from ipowatch's "Last GMP" column and
- * are intentionally NOT overwritten here.
+ * Sources: tablepress-21 (Mainboard) and tablepress-9 (SME) on
+ * https://www.ipowatch.in/ipo-grey-market-premium-latest-ipo-gmp/
  *
- * Matching is done by closeDate.  Mutates `ipos` in place, never throws.
+ * Listed IPOs already have their GMP from ipowatch's listed IPO tables and
+ * are intentionally NOT overwritten here.  Mutates `ipos` in place, never throws.
  */
-async function enrichGmpFromInvestorGain(
-  ipos: IpoDataInternal[]
-): Promise<void> {
-  const urls = [
-    "https://www.investorgain.com/report/live-ipo-gmp/331/ipo/",
-    "https://www.investorgain.com/report/live-ipo-gmp/331/sme/",
-  ];
-
-  // Build lookup: closeDate → IPO index (only for non-Listed IPOs)
-  const byCloseDate = new Map<string, number>();
+async function enrichGmpFromIpowatch(ipos: IpoDataInternal[]): Promise<void> {
+  // Build lookup: closeDate → [indices] for non-Listed IPOs without GMP.
+  // We store arrays to handle same-closeDate pairs (e.g. two SME IPOs closing Feb 25).
+  const byCloseDate = new Map<string, number[]>();
   for (let i = 0; i < ipos.length; i++) {
-    if (ipos[i].closeDate && ipos[i].status !== "Listed") {
-      byCloseDate.set(ipos[i].closeDate!, i);
+    if (ipos[i].status !== "Listed" && ipos[i].closeDate && !ipos[i].gmp) {
+      const d = ipos[i].closeDate!;
+      byCloseDate.set(d, [...(byCloseDate.get(d) ?? []), i]);
     }
   }
+  if (byCloseDate.size === 0) return;
 
-  const currentYear = new Date().getFullYear();
+  const url =
+    "https://www.ipowatch.in/ipo-grey-market-premium-latest-ipo-gmp/";
+  try {
+    const res = await fetch(url, {
+      headers: FETCH_HEADERS,
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) {
+      console.warn(`enrichGmp: HTTP ${res.status} for ipowatch GMP page`);
+      return;
+    }
+    const html = await res.text();
+    const $ = cheerio.load(html);
 
-  for (const url of urls) {
-    try {
-      const res = await fetch(url, {
-        headers: FETCH_HEADERS,
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) {
-        console.warn(`enrichGmp: HTTP ${res.status} for ${url}`);
-        continue;
-      }
-      const html = await res.text();
-      const $ = cheerio.load(html);
-
-      // InvestorGain table columns (0-indexed):
-      // 0=Name, 1=GMP, 2=Rating, 3=Sub, 4=Price, 5=IssueSize,
-      // 6=Lot, 7=Open, 8=Close, 9=BoA, 10=Listing, 11=UpdatedOn, 12=Anchor
-      $("table tr").each((_i, row) => {
+    // Columns (0-indexed): 0=IPO name, 1=GMP (₹X), 2=Price Band, 3=Gain%, 4=Date range
+    // Date range format: "20-24 Feb" or "26-2 March" (open day–close day + closing month)
+    ["#tablepress-21", "#tablepress-9"].forEach((sel) => {
+      $(`${sel} tbody tr`).each((_i, row) => {
         const cells = $(row).find("td");
-        if (cells.length < 9) return;
+        if (cells.length < 5) return;
 
-        // Close date column: "24-Feb" format
-        const closeDateRaw = $(cells[8]).text().trim().split("\n")[0].trim();
-        const closeParts = closeDateRaw.match(/^(\d{1,2})-([A-Za-z]{3})$/);
-        if (!closeParts) return;
+        // Parse close date from "20-24 Feb" → 2026-02-24, "26-2 March" → 2026-03-02
+        const dateParts = $(cells[4])
+          .text()
+          .trim()
+          .match(/\d+-(\d+)\s+([A-Za-z]+)/);
+        if (!dateParts) return;
         const closeDate = new Date(
-          `${closeParts[2]} ${closeParts[1]}, ${currentYear}`
+          `${dateParts[2]} ${dateParts[1]}, ${new Date().getFullYear()}`
         )
           .toISOString()
           .slice(0, 10);
 
-        const idx = byCloseDate.get(closeDate);
-        if (idx === undefined) return;
+        const indices = byCloseDate.get(closeDate);
+        if (!indices?.length) return;
 
-        // GMP column: "₹8.5 (10.76%)" — extract the ₹ amount
-        const gmpRaw = $(cells[1]).text().trim();
-        const gmpMatch = gmpRaw.match(/₹\s*([-\d.]+)/);
+        const gmpMatch = $(cells[1]).text().trim().match(/₹\s*([-\d.]+)/);
         if (!gmpMatch) return;
         const gmp = parseFloat(gmpMatch[1]);
-        if (isNaN(gmp)) return;
+        if (isNaN(gmp) || gmp === 0) return; // ₹0 = no grey market premium, skip
 
-        // Only set if not already populated from ipowatch
-        if (ipos[idx].gmp === undefined || ipos[idx].gmp === null) {
-          ipos[idx].gmp = gmp;
-          console.log(
-            `GMP enriched: ${ipos[idx].companyName} — ₹${gmp}`
-          );
-        }
+        // Tiebreak when two IPOs share a close date: pick by word-overlap with company name
+        const tableCompany = $(cells[0]).text().trim().toLowerCase();
+        const idx =
+          indices.length === 1
+            ? indices[0]
+            : indices.sort((a, b) => {
+                const scoreA = tableCompany
+                  .split(/\s+/)
+                  .filter((w) => ipos[a].companyName.toLowerCase().includes(w))
+                  .length;
+                const scoreB = tableCompany
+                  .split(/\s+/)
+                  .filter((w) => ipos[b].companyName.toLowerCase().includes(w))
+                  .length;
+                return scoreB - scoreA;
+              })[0];
+
+        ipos[idx].gmp = gmp;
+        console.log(`GMP enriched: ${ipos[idx].companyName} — ₹${gmp}`);
       });
-    } catch (err) {
-      console.warn(`enrichGmp: failed for ${url}:`, err);
-    }
+    });
+  } catch (err) {
+    console.warn("enrichGmp (ipowatch): failed:", err);
   }
 }
 
@@ -670,11 +685,11 @@ export async function fetchAllIPOs(): Promise<IpoData[]> {
       }
     }
 
-    // Enrich subscription data (Chittorgarh) and GMP (InvestorGain) in parallel.
-    // Both functions are safe to run concurrently and mutate deduped in place.
+    // Enrich subscription data (Chittorgarh SSR pages) and GMP (ipowatch GMP page)
+    // in parallel.  Both functions are safe to run concurrently and mutate deduped in place.
     await Promise.all([
       enrichSubscriptionFromChittorgarh(deduped),
-      enrichGmpFromInvestorGain(deduped),
+      enrichGmpFromIpowatch(deduped),
     ]);
 
     // Strip internal detailUrl field before returning
