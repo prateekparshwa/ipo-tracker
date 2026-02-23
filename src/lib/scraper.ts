@@ -594,7 +594,7 @@ async function enrichGmpFromIpowatch(ipos: IpoDataInternal[]): Promise<void> {
         const gmpMatch = $(cells[1]).text().trim().match(/₹\s*([-\d.]+)/);
         if (!gmpMatch) return;
         const gmp = parseFloat(gmpMatch[1]);
-        if (isNaN(gmp) || gmp === 0) return; // ₹0 = no grey market premium, skip
+        if (isNaN(gmp)) return; // ₹0 is valid GMP (shares at par in grey market)
 
         // Tiebreak when two IPOs share a close date: pick by word-overlap with company name
         const tableCompany = $(cells[0]).text().trim().toLowerCase();

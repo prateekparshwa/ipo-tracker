@@ -72,7 +72,7 @@ export default function IpoCard({ ipo }: IpoCardProps) {
                 : ipo.priceBandHigh}
             </span>
           )}
-          <GmpBadge gmp={ipo.gmp ? Number(ipo.gmp) : null} priceHigh={ipo.priceBandHigh ? Number(ipo.priceBandHigh) : null} />
+          <GmpBadge gmp={ipo.gmp != null ? Number(ipo.gmp) : null} priceHigh={ipo.priceBandHigh ? Number(ipo.priceBandHigh) : null} />
         </div>
 
         {/* Details grid */}

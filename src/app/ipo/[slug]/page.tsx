@@ -57,7 +57,7 @@ export default async function IpoDetailPage({ params }: PageProps) {
 
   const priceHigh = ipo.priceBandHigh ? Number(ipo.priceBandHigh) : null;
   const priceLow = ipo.priceBandLow ? Number(ipo.priceBandLow) : null;
-  const gmp = ipo.gmp ? Number(ipo.gmp) : null;
+  const gmp = ipo.gmp != null ? Number(ipo.gmp) : null;
   const expectedListing = priceHigh && gmp ? priceHigh + gmp : null;
 
   return (
